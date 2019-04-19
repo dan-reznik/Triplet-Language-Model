@@ -1,0 +1,124 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(magrittr)
+library(pdftools)
+
+source("../source/language_model.R")
+```
+
+```{r}
+text <- pdf_text("pantagruel.pdf") %>% str_c(collapse=" ") %>% str_squish
+text %>% str_length
+```
+
+- The first batch of chapters I-XXXIV is the table of contents, modern french
+- The second batch is the same, original french
+- The third batch is the modern french text: 71:105
+- The fourth is the original french text
+
+```{r}
+str_extract_all(text%>%str_replace_all(fixed("'"),"’"),
+                regex("(chapitre [ivxl]+)|(prologue de l’auteur)",
+                      ignore_case=T)) %>% first
+```
+
+```{r}
+text_split <- text %>%
+  str_replace_all(fixed("’"),"'") %>% # weird big quotes
+  str_replace_all(fixed("–"),"-") %>% # weird long bars
+  str_split(regex(".(?=(chapitre [ivxl]{1,6})|(prologue de l'auteur))",
+                  ignore_case=T)) %>%
+  first %>%
+  .[72:106]
+```
+
+```{r}
+text_split %>% length
+text_split[c(1,2,35)] %>% str_sub(end=100) # prologue, 1st, last chapts
+```
+
+Need to separate text from chapter name. Notice the non-greedy (shortest possible match) with the "?" after ".*"
+
+```{r}
+text_split_headings <- text_split %>%
+  str_extract(regex("(chapitre [ivxl]{1,6}.*?\\.)|(prologue de l'auteur)",
+                    ignore_case=T))
+head(text_split_headings)
+```
+
+```{r}
+text_df <- data_frame(headings=text_split_headings,
+                      content=map2_chr(text_split,text_split_headings,
+                                       ~str_sub(.x,start=str_length(.y)+1)) %>% str_trim) %>%
+  mutate(headings=if_else(str_detect(headings,fixed("Prologue")),
+                          headings %>% str_c(" - "),
+                          headings)) %>%
+  separate(headings,into=c("chapter","title"),sep=fixed(" - ")) %>%
+  mutate(chapt_num=row_number()-1) %>%
+  select(chapt_num,everything())
+```
+
+Needs to fix beginning of each content, which is missing a letter and sometimes has [O]
+
+```{r}
+text_df$content %>% str_sub(end=20) %>% str_c(collapse="\n") %>% cat
+```
+
+```{r}
+insert_chars <- c("T","J","G","Q","J","A","U",
+                  "", # Mais
+                  "P","U","P","A","A","A","L","U","P",
+                  "", # J'ai
+                  "E","E","A","P","S","P","Q","A","P",
+                  "", # Et comment
+                  "A","L","C","A","Q","P","M")
+text_df_fixed_test <- data_frame(prefix=text_df$content %>% str_trim() %>% str_sub(end=20),
+                                 prefix_sans_O=prefix %>% str_replace("^\\[O\\] ",""),
+                                 prefix_new=insert_chars %>% str_c(prefix_sans_O))
+```
+
+We must clean up [Note_d+]
+
+```{r}
+text_df$content %>% str_extract(regex("...note........",ignore_case = T))
+```
+
+```{r}
+text_df$content %>% str_extract_all("\\[Note_\\d+?\\]") %>% unlist
+```
+
+
+```{r}
+text_df_fixed <- text_df %>% 
+  mutate(content=content %>%
+           str_trim %>%
+           str_replace("^\\[O\\] ",""),
+         content=insert_chars %>% str_c(content),
+         content=content %>% str_replace_all("\\[Note_\\d+?\\]","")) %>%
+  add_column(book="pantagruel",.before = 1) %>%
+  mutate(length=content %>% str_length)
+glimpse(text_df_fixed)
+```
+
+
+
+
+
+```{r}
+text_df_fixed %>%
+  ggplot(aes(chapt_num,length)) +
+  geom_line() +
+  geom_smooth()
+```
+
+```{r}
+chapt_triplet_probs <- text_df_fixed %>%
+  get_triplets_script("../Triplet Language Model/data/rabelais.rds")
+```
+
+

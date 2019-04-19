@@ -1,0 +1,70 @@
+---
+title: "Language Model: Shakespeare Sonnets"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(magrittr)
+
+source("../source/language_model.R")
+```
+
+
+```{r}
+text <- read_file("https://archive.org/stream/shakespearessonn01041gut/wssnt10.txt")
+```
+
+This seems lie a bug in str_detect
+
+```{r}
+str_detect("THE SONNETS\r\nby William Shakespeare\r\n\r\n\r\n",
+           regex("the sonnets\r\n.*?shakespeare",ignore_case = T))
+```
+
+
+```{r}
+text %>% str_extract(regex("the sonnets\r\n?.*?shakespeare[\r\n]+",ignore_case = T))
+text %>% str_extract(regex("water cools not love.",ignore_case=T))
+```
+
+Beginning and end
+
+```{r}
+text_boundaries <- text %>%
+  str_locate(regex(c("the sonnets\r\n?.*?shakespeare[\r\n]+",
+                     "water cools not love."),ignore_case = T))
+text_boundaries
+```
+
+```{r}
+text_cut <- text %>% str_sub(start=text_boundaries[1,2]+1,end=text_boundaries[2,2])
+```
+
+```{r}
+chapt_names <- text_cut %>%
+  str_extract_all("[IVXLC]+(?=\r\n\r\n)") %>%
+  first %T>%
+  print
+```
+
+```{r}
+text_split <- text_cut %>% str_split("[IVXLC]+\r\n\r\n") %>%
+  first %>%
+  tail(-1)
+```
+
+```{r}
+text_df <- data_frame(book="sonnets",
+                      content=text_split %>% str_squish,
+                      chapt_name=chapt_names) %>%
+  mutate(chapt_num=row_number()) %>%
+  select(book,chapt_num,chapt_name,content)
+```
+
+# Prepare for shiny application
+
+```{r}
+chapt_triplet_probs <- text_df %>%
+  get_triplets_script("../Triplet Language Model/data/shakespeare.rds")
+```

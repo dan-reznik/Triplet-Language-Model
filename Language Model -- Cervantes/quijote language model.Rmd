@@ -1,0 +1,238 @@
+---
+title: "Language model: quijote"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(stringi)
+library(compiler)
+library(magrittr)
+library(glue)
+```
+
+```{r}
+fns <- list.files(path="data", pattern="*.rds",full.names=T)
+fns
+```
+
+
+```{r}
+dq1605_chapt_df <- readRDS("data/dq1605_chapt_df.rds")
+dq1615_chapt_df <- readRDS("data/dq1615_chapt_df.rds")
+```
+
+
+# Probability n-grams
+
+```{r}
+dqboth_chapt_words <- dq1605_chapt_df %>% mutate(book="1605") %>%
+  bind_rows(dq1615_chapt_df %>% mutate(book="1615")) %>%
+  mutate(book=book%>%as.factor()) %>%
+  select(book,chapter_num,content) %>%
+  #head(2) %>%
+  mutate(content=content %>% str_replace_all("([:punct:])"," \\1 ") %>%
+           str_squish %>% str_to_lower(),
+         word=content %>% str_split(fixed(" "))) %>%
+  select(-content) %>%
+  unnest(word)
+nrow(dqboth_chapt_words)
+n_distinct(dqboth_chapt_words$word)
+```
+
+Which are punctuation?
+
+```{r}
+dqboth_chapt_words %>%
+  filter(str_detect(word,"[:punct:]")) %>%
+  count(word,sort=T)
+```
+
+Filter bad punctuation
+
+```{r}
+dqboth_chapt_words_fix_punct <- dqboth_chapt_words %>%
+    filter(!(word %in% c("\"","¿","¡","(",")","&","*"))) %>%
+  mutate(word=if_else(word %in% c(";","!"), ".", word))
+
+dqboth_chapt_words_fix_punct %>%
+  filter(str_detect(word,"[:punct:]")) %>%
+  count(word,sort=T) %>%
+  print
+```
+
+```{r}
+getBookCh <- function(book,ch_num) {
+  b <- if(book=="1605") dq1605_chapt_df else dq1615_chapt_df
+  b %>%
+    filter(chapter_num==ch_num) %>%
+    pull(content)
+}
+findPassage <- function(s,snippet,window=50) s%>%str_extract(sprintf(".{%d}%s.{%d}",window,snippet,window))
+```
+
+Investigate non-punctiation data. Note: findPassage is only returning the first occurrence, so the repetition in column "passage"" below is a bug.
+
+```{r}
+dqboth_numeric_problems <-
+dqboth_chapt_words_fix_punct %>% 
+  filter(str_detect(word,"[^[:alpha:][:punct:]]")) %>%
+  mutate(passage=pmap_chr(list(book,chapter_num,word),
+                          ~getBookCh(..1,..2) %>% findPassage(..3,25)))
+dqboth_numeric_problems
+```
+
+```{r}
+dqboth_numeric_problems$word %>% unique %>% sort
+```
+
+```{r}
+dqboth_numeric_problems_df <- data_frame(prob=dqboth_numeric_problems$word %>% unique %>% sort,
+                                 repl=c("Oh","diez","dieciséis",
+                                        "1614","veinte",
+                                        "veinticinco","cincuenta")) %T>%
+  print
+```
+
+Apply str_replace_all for each case above:
+
+```{r}
+fixNumericProblemsContencs <- function(s) reduce2(dqboth_numeric_problems_df$prob,
+                                                   dqboth_numeric_problems_df$repl,
+                                                   ~str_replace_all(..1,..2%s+%"(?= )",..3),
+                                                   .init=s)
+fixNumericProblemsWord <- function(s) reduce2(dqboth_numeric_problems_df$prob,
+                                              dqboth_numeric_problems_df$repl,
+                                              ~str_replace(..1,..2%s+%"$",..3), # 1614 not replaced w 16
+                                              .init=s)
+```
+
+Made it fast by vectorizing
+
+```{r}
+dqboth_chapt_words_fix_punct %>%
+  mutate(wordNew=fixNumericProblemsWord(word)) %>%
+  filter(str_detect(word,"[^[:alpha:][:punct:]]"))
+```
+
+Fix nums
+
+```{r}
+dqboth_chapt_words_fix_punct_num <- dqboth_chapt_words_fix_punct %>%
+  mutate(word=word%>%fixNumericProblemsWord) %T>%
+  filter(str_detect(word,"[^[:alpha:][:punct:]]"))
+```
+
+### Stopped here to go to dentist
+
+Creates list of triplets
+
+```{r}
+dqboth_chapt_triplets <- dqboth_chapt_words_fix_punct_num %>%
+  mutate(word=pmap_chr(list(word,lead(word),lead(word,2)),
+                   function(a,b,c)str_c(a,b,c,sep="|"))) %>%
+  separate(word,into=c("w1","w2","w3"),sep=fixed("\\|")) %>%
+  filter(!is.na(w1),w1!="",
+         !is.na(w2),w2!="",
+         !is.na(w3),w3!="") %>%
+  #,!str_detect(w1,"[:punct:]")) %>%
+  count(w1,w2,w3,sort=T) %>%
+  mutate(triplet_number=row_number()) %>%
+  arrange(w1,w2,desc(n))
+dqboth_chapt_triplets
+```
+
+```{r}
+object.size(dqboth_chapt_triplets) %>% format(units="MB")
+```
+
+Computes probs that (w1,w2) -> w3, This table can do automatic text generation.
+
+```{r}
+dqboth_probs <- dqboth_chapt_triplets %>%
+  #head(200) %>%
+  rename(count=n) %>%
+  group_by(w1,w2) %>%
+  summarise(w3=list(w3),
+            w3_count=list(count),
+            w3_prob=list(count/sum(count))) %>%
+  ungroup %>%
+  unnest(w3,w3_count,w3_prob) %>%
+  as.data.table(key=c("w1","w2")) # for fast lookups
+dqboth_probs
+```
+
+For consumption by Shiny
+```{r}
+saveRDS(dqboth_probs,"./data/triplets_quijote.rds")
+```
+
+Look at a few samples where w1 and w1 are not punctuation
+
+```{r}
+dqboth_probs %>%
+  filter(!str_detect(w1,"[[:punct:][:digit:]]"),
+         !str_detect(w2,"[[:punct:][:digit:]]"),
+         str_length(w1)>2)
+```
+
+Use data.table for faster lookups
+
+```{r}
+# dqboth_probs <- data.table(dqboth_probs,
+#                                              key = c("w1", "w2"))
+dqboth_probs[w1=="ya"&w2=="me"]
+```
+
+Function which retrieves a probable w3 given w1,w2
+
+```{r}
+get_filt <- function(dt,my_w1,my_w2) dt[w1==my_w1&w2==my_w2]
+get_w3 <- function(dt,my_w1,my_w2) {
+  #print(glue::glue("w1={my_w1},w2={my_w2}"))
+  df_filt <- get_filt(dt,my_w1,my_w2) %>%
+    as_data_frame %>%
+    arrange(w3_prob) %>%
+    mutate(w3_prob_cum=cumsum(w3_prob))
+  
+  r <- runif(1)
+  # simulate unfair die: get first prob to be above r
+  first_prob <- detect_index(df_filt$w3_prob_cum,~.x>=r)
+  df_filt$w3[first_prob]
+}
+```
+
+# May start here. All needed is a dataframe with the following format: w1,w2,w3,w3_prob
+
+```{r}
+dqboth_probs <- readRDS("dqboth_probs.rds")
+```
+
+
+```{r}
+get_w3(dqboth_probs,"acompañado","de")
+```
+
+Generate N words: (w1,w2) -> w3. (w2,w3) -> w4, ...
+
+```{r}
+generate_utterance <- function(dt,w1,w2,n=50) {
+  drlib::accumulate_while(.x=c(w1,w2),
+                          .f=~c(.x[2],do.call(get_w3,c(list(dt),.x))),
+                          .p=~length(.x)==2,
+                          #.compare=T,
+                          .max=n) %>%
+    head_while(~length(.x)==2) %>%
+    map_chr(2) %>%
+    prepend(w1) %>%
+    str_c(collapse=" ") %>%
+    str_replace_all("\\s+([:punct:])","\\1")
+}
+```
+
+```{r}
+suppressWarnings(generate_utterance(dqboth_probs,"ya","me",1000))
+```
+
+

@@ -1,0 +1,113 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(magrittr)
+library(stringr)
+library(pdftools)
+
+source("../source/language_model.R")
+```
+
+```{r}
+lusiadas <- pdf_text("lusiadas.pdf")
+lusiadas %>% glimpse
+```
+
+How many characters per section
+
+```{r}
+lengths<-map_int(lusiadas,str_length)
+lengthsQs<-quantile(lengths)
+lengthsIQR<-lengthsQs[["75%"]]-lengthsQs[["25%"]]
+minW <- lengthsQs[["25%"]]-1.5*lengthsIQR
+maxW <- lengthsQs[["75%"]]+1.5*lengthsIQR
+data_frame(lengths=lengths) %>%
+  filter(between(lengths,minW,maxW)) %>%
+  ggplot(aes(lengths)) +
+  geom_histogram(fill="pink",color="black")
+```
+
+```{r}
+lusiadas[1:3]
+```
+
+```{r}
+lusiadas0 <- lusiadas %>% str_c(collapse="\r\n")
+lusiadas0 %>% str_length
+```
+
+São 10 cantos
+
+```{r}
+chapt_names <- lusiadas0 %>%
+  str_extract_all(regex("canto[:blank:]+?[ivxlc]{1,4}",ignore_case=T)) %>% first
+chapt_names
+```
+
+```{r}
+lusiadas0_titles <- lusiadas0 %>%
+  str_extract_all("Canto[:blank:][IVX]{1,3}")
+```
+
+
+```{r}
+chapt_contents <- lusiadas0 %>%
+  str_split("Canto[:blank:][IVX]{1,3}\\n?") %>%
+  first %>% # str_split returns single-el list
+  tail(-1) # first is preamble
+chapt_contents %>% str_sub(end=100)
+```
+
+```{r}
+chapt_stanzas <- data_frame(canto=chapt_names,
+                            content=chapt_contents) %>%
+  mutate(stanza=str_split(content,"\n")) %>%
+  select(-content) %>%
+  unnest(stanza) %>%
+  filter(stanza %>% str_detect("[[:alpha:]]")) %>% 
+  group_by(canto) %>%
+  mutate(stanza_num=row_number(),
+         stanza_chars=str_length(stanza)) %>%
+  ungroup() %>% 
+  select(canto,stanza_num,stanza_chars,everything())
+```
+
+Stanzas per Canto
+
+```{r}
+chapt_stanzas %>%
+  group_by(canto) %>%
+  summarize(stanzas=n()) %>%
+  ggplot(aes(x=canto,y=stanzas)) +
+  geom_col() +
+  ggtitle("Stanzas per Canto")
+```
+
+Chars per Canto
+
+```{r}
+chapt_stanzas %>%
+  group_by(canto) %>%
+  summarize(stanza_chars=sum(stanza_chars)) %>%
+  ggplot(aes(x=canto,y=stanza_chars)) +
+  geom_col() +
+  ggtitle("Stanza Chars per Canto")
+```
+
+get_chapt_words(df): df has (book,chapt_num,content)
+
+```{r}
+chapt_book <- chapt_stanzas %>%
+  transmute(book="lusíadas",
+            chapt_num=str_c(canto," - ",stanza_num),
+            content=stanza)
+```
+
+```{r}
+chapt_triplet_probs <- chapt_book %>%
+  get_triplets_script("../Triplet Language Model/data/camões.rds")
+```

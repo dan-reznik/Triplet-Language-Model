@@ -1,0 +1,182 @@
+---
+title: "Novel Utterance Generator"
+resource_files:
+- data/cervantes.rds
+- data/isaías.rds
+- data/rabelais.rds
+- data/isaías.rds
+- images/cervantes.jpg
+- images/isaías.jpg
+- images/rabelais.jpg
+- data/camões.rds
+- images/camões.jpg
+- data/shakespeare.rds
+- images/shakespeare.jpg
+runtime: shiny
+output:
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    social: menu
+    source_code: embed
+    theme: cerulean
+---
+
+```{r global, include=FALSE}
+library(shiny)
+library(tidyverse)
+library(magrittr)
+library(flexdashboard)
+library(data.table)
+
+file_df <- data_frame(name=list.files("./data",full.names = T),
+                      base=basename(name) %>% str_sub(end=-5),
+                      rds=name %>% map(read_rds),
+                      triplets=rds %>% map_int(nrow),
+                      doublets=rds%>% map_int(~as.integer(sum(.x$w3_prob))),
+                      words=rds%>%map_int(~sum(.x$w3_count)))
+
+get_filt <- function(dt,my_w1,my_w2) dt[w1==eval(my_w1)&w2==eval(my_w2)]
+get_w3 <- function(dt,my_w1,my_w2) {
+  if(length(my_w2)==0) print(glue::glue("w1={my_w1},w2={my_w2}"))
+  df_filt <- get_filt(dt,my_w1,my_w2) %>%
+    as_data_frame %>%
+    arrange(w3_prob) %>%
+    mutate(w3_prob_cum=cumsum(w3_prob))
+  
+  r <- runif(1)
+  # simulate unfair die: get first prob to be above r
+  first_prob <- detect_index(df_filt$w3_prob_cum,~.x>=r)
+  df_filt$w3[first_prob]
+}
+
+generate_utterance_while <- function(dt,w1,w2,n=50) {
+  words <-vector("list", n+2)
+  words[[1]] <- w1
+  words[[2]] <- w2
+  i <- 2
+  repeat{
+    if(i>=n) break
+    w3 <- get_w3(dt,w1,w2)
+    if(length(w3)==0) break
+    i <- i + 1
+    words[[i]] <- w3
+    w1 <- w2
+    w2 <- w3
+  }
+  #print(i)
+  map_chr(words[1:i],1) %>%
+    str_c(collapse=" ") %>%
+    str_replace_all("\\s+([^[:alnum:]’'])","\\1") %>%
+    str_replace_all("-\\s(?=[:alpha:])","-")
+}
+
+remove_accents <- function(s) s %>% iconv(from="UTF-8",to="ASCII//TRANSLIT")
+```
+
+# Inputs {.sidebar data-width=150}
+
+```{r input}
+selectInput("corpusMenu", label = "corpus",
+            choices = 1:nrow(file_df) %>% set_names(file_df$base),
+            selected=1)
+selectInput("maxWordsMenu", label = "max words",
+            choices = c(50,100,200,500,1000),
+            selected=200)
+actionButton("genBtn", label = "generate",
+             #style = "color: FireBrick",
+             class="btn-danger") # https://bootswatch.com/cerulean/
+
+p()
+p("triples:")
+
+downloadButton("download", "download triples",
+               class="btn-info")
+# must be placed within sidebar
+
+
+downloadHandler(
+  # returns name to use when saving the file.
+  filename = function() {
+    the_i <- input$corpusMenu %>% as.integer
+    #print(sprintf("filename: i=%d,row=%d",the_i,nrow(file_df)))
+    the_base <- file_df[[the_i,"base"]] %>% remove_accents
+    str_c(the_base,".csv")
+  },
+  # write data to file
+  content = function(file) {
+    the_i <- input$corpusMenu %>% as.integer
+    #print(sprintf("content: i=%d,row=%d",the_i,nrow(file_df)))
+    the_rds <- file_df[[the_i,"rds"]]%>%
+      mutate(w3_prob=w3_prob%>%round(3))
+    write_delim(the_rds,file,delim = "|")
+  })
+```
+
+# Main
+
+## Column {data-width=300}
+
+### Writer {data-height=600}
+
+```{r}
+renderImage({
+  # Return a list containing the filename
+  list(src = str_c("./images/",
+                   file_df$base[as.integer(input$corpusMenu)], ".jpg"))
+}, deleteFile = F)
+```
+
+### Corpus {data-height=300}
+
+```{r}
+renderTable({
+  count <- file_df[as.integer(input$corpusMenu),
+                   c("words","doublets","triplets")] %>%
+    as.integer()
+  data_frame(qty=c("tokens","pairs","triples"),
+             count=count)
+  #valueBox(ws, caption="total tokens",color="orange")
+})
+
+```
+
+## Column
+
+### Utterance
+
+```{r}
+sample_pair <- function(rds) {
+  rds_no_symb <- rds[str_length(w1)>2&str_length(w2)>2]
+  r <- sample.int(nrow(rds_no_symb),1)
+  w1 <- rds_no_symb$w1[r]
+  w2 <- rds_no_symb$w2[r]
+  c(w1,w2)
+}
+
+rds <- eventReactive(c(input$corpusMenu,
+                       input$genBtn,
+                       input$maxWordsMenu),
+                     as.integer(input$corpusMenu))
+
+# .level3
+css <- "<style>#section-utterance {font-size: 20px}\n.shiny-html-output {overflow-y: scroll;}</style>"
+renderUI({
+  the_rds <- file_df$rds[[rds()]]
+  pair <- sample_pair(the_rds)
+  utt <- generate_utterance_while(the_rds,pair[1],pair[2],
+                                  as.integer(input$maxWordsMenu))
+  HTML(str_c(css,utt))
+  })
+```   
+
+# How it works
+
+Departing from a corpus of text, build a table of unique 3-token sequences (w1,w2,w3), annotating each with the probability of w3, given (w1,w2). The novel utterance is a simple Markov-walk on this table, i.e., start with an initial (w1,w2). For all possible w3's that may follow, select one via an unfair RNG, weighted by the w3's probs. Repeat the process starting with (w2,w3), to produce a w4, etc.
+
+<b>note1: </b>within a novel utterance, all sequential triples (w1,w2,w3) are guaranteed to have been penned by the original author, whereas a given quadruple (w1,w2,w3,w4) may not.
+
+<b>note2:</b> a novel utterance may contain less than max words when the Markov-walk hits a dead-end, i.e., for some (w1,w2) there is no w3 on the table of triples. This happens when a previous (w0,w1) produced a w2 such that the pair (w1,w2) comes from the end of a chapter.
+
+<b>future work:</b> upgrade triplet-based language model to RNN or LSTM
+
+© 2018 <a href="https://www.linkedin.com/in/dan-s-reznik-phd-bb49133">Dan S. Reznik</a>

@@ -1,0 +1,191 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(stringi)
+library(compiler)
+library(magrittr)
+library(glue)
+library(rvest)
+```
+
+Bring in language model functions
+
+```{r}
+source("../source/language_model.R")
+```
+
+```{r}
+urls <- str_c("https://www.bibliaonline.com.br/acf/is/",1:64)
+urls[1:3]
+```
+
+Reads the html
+
+```{r}
+htmls <- map(urls,read_html)
+```
+
+Locates the passage nodes
+```{r}
+passages <- map_chr(htmls,~.x %>% html_nodes("[class*=passage]") %>% html_attr("class")) %T>% print
+```
+
+```{r}
+txt1 <- htmls[[1]] %>% html_nodes("[class*=passage]") %>% html_text()
+txt1 %>% str_sub(end=300L) 
+```
+
+```{r}
+txt1 %>%
+  str_split("[:digit:]+\\s+") %>%
+  first %>%
+  tail(-1) %>%
+  # strip last space
+  str_sub(end=-2) %>%
+  head
+```
+
+```{r}
+txts <- map_chr(htmls,
+                ~.x %>%
+                  html_nodes("[class*=passage]") %>%
+                  html_text())
+```
+
+```{r}
+txts_split <- txts %>%
+  str_split("[:digit:]+\\s+") %>%
+  map(~.x %>%
+        tail(-1) %>%
+        str_sub(end=-2))
+```
+
+```{r}
+txts_split %>% saveRDS("isaias.rds")
+```
+
+# will do language model here
+
+Sem versículo, só concatenando
+
+```{r}
+txts_df <- data_frame(content=map_chr(txts_split,
+                                      ~str_c(.x,collapse=" ")),
+                      book="isaías") %>%
+  mutate(chapt_num=row_number())
+```
+
+Com livro, capítulo, versículo
+
+```{r}
+txts_df2 <- txts_split %>% map2_dfr(1:length(.),
+                                    ~data_frame(content=.x)%>%
+                                      mutate(book="isaías",
+                                             chapt_num=.y,
+                                             passage=row_number()))
+```
+
+```{r}
+chapt_words <- get_chapt_words(txts_df)
+nrow(chapt_words)
+n_distinct(chapt_words$word)
+```
+
+Which are punctuation?
+
+```{r}
+get_punct(chapt_words)
+```
+
+Filter bad punctuation
+
+```{r}
+chapt_words_fix_punct <- chapt_words %>%
+  fix_punct
+chapt_words_fix_punct %>%
+  get_punct
+```
+
+Investigate non-punctiation data. Note: findPassage is only returning the first occurrence, so the repetition in column "passage"" below is a bug.
+
+```{r}
+chapt_words_fix_punct %>% 
+  filter(str_detect(word,"[^[:alpha:][:punct:]]"))
+```
+
+Creates list of triplets
+
+```{r}
+chapt_triplets <- chapt_words_fix_punct %>%
+  get_chapt_triplets
+chapt_triplets
+```
+
+
+```{r}
+object.size(chapt_triplets) %>% format(units="MB")
+```
+
+Computes probs that (w1,w2) -> w3, This table can do automatic text generation. Save for Shiny consumption
+
+```{r}
+chapt_triplet_probs <- chapt_triplets %>% get_triplet_probs
+chapt_triplet_probs %>% saveRDS("../Triplet Language Model/data/isaiah.rds")
+```
+
+# Can start from here
+
+```{r}
+chapt_triplet_probs <- read_rds("./data/triplets_isaiah.rds")
+```
+
+Look at a few samples where w1 and w1 are not punctuation
+
+```{r}
+chapt_triplet_probs %>%
+  filter(!str_detect(w1,"[[:punct:][:digit:]]"),
+         !str_detect(w2,"[[:punct:][:digit:]]"),
+         str_length(w1)>2)
+```
+
+
+Check on a few entries
+
+```{r}
+chapt_triplet_probs[w3_prob%>%between(.2,.75)]
+```
+
+```{r}
+get_filt(chapt_triplet_probs,"animais","do")
+```
+
+```{r}
+get_w3(chapt_triplet_probs,"animais","do")
+```
+
+```{r}
+chapt_triplet_probs %>% mutate(w3_length=str_length(w3)) %>% count(w3_length)
+```
+
+Generate N words: (w1,w2) -> w3. (w2,w3) -> w4, ...
+
+
+```{r}
+generate_utterance(chapt_triplet_probs,"animais","do",100)
+```
+
+```{r}
+chapt_triplets %>% chapt_doublets
+```
+
+```{r}
+generate_utterance(chapt_triplet_probs,"eis","que",200)
+```
+
+```{r}
+generate_utterance(chapt_triplet_probs,"povo","terrível",200)
+```
