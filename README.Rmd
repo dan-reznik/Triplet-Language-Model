@@ -1,0 +1,35 @@
+---
+title: "Triplet Language Model"
+output: github_document
+---
+
+```{r,echo=F}
+knitr::opts_chunk$set(
+  cache=T,
+  collapse=T,
+  comment="#>",
+  dpi=96,
+  fig.align="center",
+  out.width='100%',
+  echo=F
+)
+```
+
+Source code for the triplet language model available as a shiny app [here](https://dreznik.shinyapps.io/triplet/).
+
+```{r,echo=F,out.width="33%",fig.align="center"}
+knitr::include_graphics("cervantes.jpg")
+```
+
+The algo is based on an [3-gram language model](https://en.wikipedia.org/wiki/N-gram), as follows:
+
+* Departing from a corpus of text, build a table of unique 3-token sequences (w1,w2,w3), annotating each with the probability of w3, given (w1,w2)
+* The novel utterance is a simple Markov-walk on this table, i.e., start with an initial (w1,w2).
+* For all possible w3’s that may follow, select one via an unfair RNG, weighted by the w3’s probs.
+* Repeat the process starting with (w2,w3), to produce a w4, etc.
+* Notes:
+    1. within a novel utterance, all sequential triples (w1,w2,w3) are guaranteed to have been penned by the original author, whereas a given quadruple (w1,w2,w3,w4) may not.
+    1. a novel utterance may contain less than max words when the Markov-walk hits a dead-end, i.e., for some (w1,w2) there is no w3 on the table of triples. This happens when a previous (w0,w1) produced a w2 such that the pair (w1,w2) comes from the end of a chapter.
+
+* Future work: upgrade triplet-based language model to RNN or LSTM
+
