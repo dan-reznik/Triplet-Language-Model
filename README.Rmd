@@ -21,7 +21,7 @@ Source code for the triplet language model available as a shiny app [here](https
 knitr::include_graphics("cervantes.jpg")
 ```
 
-The algo is based on an [3-gram language model](https://en.wikipedia.org/wiki/N-gram), as follows:
+The algo, implemented in `source/language_model.R`, is based on [3-grams](https://en.wikipedia.org/wiki/N-gram), and described as follows:
 
 * Departing from a corpus of text, build a table of unique 3-token sequences (w1,w2,w3), annotating each with the probability of w3, given (w1,w2)
 * The novel utterance is a simple Markov-walk on this table, i.e., start with an initial (w1,w2).
